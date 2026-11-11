@@ -4,7 +4,11 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
-import android.bluetooth.BluetoothSocket
+import android.bluetooth.BluetoothGatt
+import android.bluetooth.BluetoothGattCallback
+import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattDescriptor
+import android.bluetooth.BluetoothProfile
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -21,29 +25,33 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import java.io.OutputStream
 import java.util.UUID
 import kotlin.math.roundToInt
 
 class MainActivity : AppCompatActivity() {
 
-    private val SPP: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
-    private val adapter: BluetoothAdapter? by lazy { BluetoothAdapter.getDefaultAdapter() }
+    // Yaygın BLE seri servisleri
+    private val FFE0 = UUID.fromString("0000ffe0-0000-1000-8000-00805f9b34fb")
+    private val FFE1 = UUID.fromString("0000ffe1-0000-1000-8000-00805f9b34fb")
+    private val NUS  = UUID.fromString("6e400001-b5a3-f393-e0a9-e50e24dcca9e")
+    private val NUS_W = UUID.fromString("6e400002-b5a3-f393-e0a9-e50e24dcca9e")
+    private val NUS_N = UUID.fromString("6e400003-b5a3-f393-e0a9-e50e24dcca9e")
+    private val CCCD = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
-    private var socket: BluetoothSocket? = null
-    private var out: OutputStream? = null
+    private val adapter: BluetoothAdapter? by lazy { BluetoothAdapter.getDefaultAdapter() }
+    private var gatt: BluetoothGatt? = null
+    private var writeChar: BluetoothGattCharacteristic? = null
     @Volatile private var connected = false
 
-    @Volatile private var throttle = 0   // -100..100
-    @Volatile private var steer = 0      // -100..100
+    @Volatile private var throttle = 0
+    @Volatile private var steer = 0
     private var maxPct = 40
-    private var minPwm = 25
+    private var minPwm = 100
     private var cruiseOn = false
     private var cruiseLevel = 20
 
     private val ui = Handler(Looper.getMainLooper())
     private lateinit var status: TextView
-    private lateinit var sender: Thread
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -59,7 +67,7 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(16), dp(16), dp(16))
         }
-        val title = TextView(this).apply { text = "CopDroid — Çöp Aracı Kumanda"; textSize = 20f }
+        val title = TextView(this).apply { text = "CopDroid — Çöp Aracı Kumanda (BLE)"; textSize = 18f }
         status = TextView(this).apply { text = "Bağlı değil"; textSize = 14f }
 
         val btnConnect = Button(this).apply {
@@ -67,33 +75,13 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener { if (connected) disconnect() else pickAndConnect() }
         }
         val btnStop = Button(this).apply {
-            text = "ACİL DUR"
-            setBackgroundColor(0xFFD32F2F.toInt())
-            setTextColor(0xFFFFFFFF.toInt())
-            setOnClickListener { throttle = 0; steer = 0; cruiseOn = false; sendLine("S") }
-        }
-
-        val cruiseLabel = TextView(this).apply { text = "Yürüyüş hızı: %$cruiseLevel" }
-        val cruiseBar = SeekBar(this).apply {
-            max = 100; progress = cruiseLevel
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(sb: SeekBar, p: Int, u: Boolean) { cruiseLevel = p; cruiseLabel.text = "Yürüyüş hızı: %$p" }
-                override fun onStartTrackingTouch(sb: SeekBar) {}
-                override fun onStopTrackingTouch(sb: SeekBar) { if (cruiseOn) sendLine("W,1,$cruiseLevel") }
-            })
-        }
-        val btnCruise = Button(this).apply {
-            text = "Yürüyüş modu: KAPALI"
-            setOnClickListener {
-                cruiseOn = !cruiseOn
-                text = if (cruiseOn) "Yürüyüş modu: AÇIK (sabit $cruiseLevel)" else "Yürüyüş modu: KAPALI"
-                sendLine(if (cruiseOn) "W,1,$cruiseLevel" else "W,0")
-            }
+            text = "ACİL DUR"; setBackgroundColor(0xFFD32F2F.toInt()); setTextColor(0xFFFFFFFF.toInt())
+            setOnClickListener { throttle = 0; steer = 0; cruiseOn = false; writeCmd("S") }
         }
 
         val joy = JoystickView(this).apply {
             layoutParams = LinearLayout.LayoutParams(dp(260), dp(260)).apply {
-                gravity = Gravity.CENTER_HORIZONTAL; topMargin = dp(16); bottomMargin = dp(16)
+                gravity = Gravity.CENTER_HORIZONTAL; topMargin = dp(12); bottomMargin = dp(12)
             }
             listener = { x, y ->
                 throttle = (y * 100).roundToInt().coerceIn(-100, 100)
@@ -104,30 +92,41 @@ class MainActivity : AppCompatActivity() {
         val maxLabel = TextView(this).apply { text = "Azami hız: %$maxPct" }
         val maxBar = SeekBar(this).apply {
             max = 100; progress = maxPct
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(sb: SeekBar, p: Int, u: Boolean) { maxPct = p; maxLabel.text = "Azami hız: %$p" }
-                override fun onStartTrackingTouch(sb: SeekBar) {}
-                override fun onStopTrackingTouch(sb: SeekBar) { sendConfig() }
-            })
+            setOnSeekBarChangeListener(simpleBar({ maxPct = it; maxLabel.text = "Azami hız: %$it" }, { sendConfig() }))
         }
         val minLabel = TextView(this).apply { text = "Başlangıç gücü: $minPwm" }
         val minBar = SeekBar(this).apply {
-            max = 120; progress = minPwm
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(sb: SeekBar, p: Int, u: Boolean) { minPwm = p; minLabel.text = "Başlangıç gücü: $p" }
-                override fun onStartTrackingTouch(sb: SeekBar) {}
-                override fun onStopTrackingTouch(sb: SeekBar) { sendConfig() }
-            })
+            max = 160; progress = minPwm
+            setOnSeekBarChangeListener(simpleBar({ minPwm = it; minLabel.text = "Başlangıç gücü: $it" }, { sendConfig() }))
+        }
+        val cruiseLabel = TextView(this).apply { text = "Yürüyüş hızı: %$cruiseLevel" }
+        val cruiseBar = SeekBar(this).apply {
+            max = 100; progress = cruiseLevel
+            setOnSeekBarChangeListener(simpleBar({ cruiseLevel = it; cruiseLabel.text = "Yürüyüş hızı: %$it" }, { if (cruiseOn) writeCmd("W,1,$cruiseLevel") }))
+        }
+        val btnCruise = Button(this).apply {
+            text = "Yürüyüş modu: KAPALI"
+            setOnClickListener {
+                cruiseOn = !cruiseOn
+                text = if (cruiseOn) "Yürüyüş modu: AÇIK (sabit $cruiseLevel)" else "Yürüyüş modu: KAPALI"
+                writeCmd(if (cruiseOn) "W,1,$cruiseLevel" else "W,0")
+            }
         }
 
         for (v in listOf(title, status, btnConnect, joy, maxLabel, maxBar, minLabel, minBar, cruiseLabel, cruiseBar, btnCruise, btnStop)) root.addView(v)
         return root
     }
 
+    private fun simpleBar(onChange: (Int) -> Unit, onStop: () -> Unit) = object : SeekBar.OnSeekBarChangeListener {
+        override fun onProgressChanged(sb: SeekBar, p: Int, u: Boolean) = onChange(p)
+        override fun onStartTrackingTouch(sb: SeekBar) {}
+        override fun onStopTrackingTouch(sb: SeekBar) = onStop()
+    }
+
     private fun ensurePermission() {
         val needed = if (Build.VERSION.SDK_INT >= 31)
             arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN)
-        else arrayOf()
+        else arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
         val miss = needed.filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
         if (miss.isNotEmpty()) ActivityCompat.requestPermissions(this, miss.toTypedArray(), 1)
     }
@@ -137,98 +136,107 @@ class MainActivity : AppCompatActivity() {
         val a = adapter ?: run { toast("Bluetooth yok"); return }
         if (!a.isEnabled) { toast("Bluetooth'u aç"); return }
         val bonded = try { a.bondedDevices.toList() } catch (e: SecurityException) { toast("İzin gerekli"); return }
-        if (bonded.isEmpty()) { toast("Önce HC-05'i telefon ayarlarından eşleştir (PIN 1234)"); return }
-        val names = bonded.map { "${deviceName(it)}  (${it.address})" }.toTypedArray()
+        if (bonded.isEmpty()) { toast("Önce modülü telefon ayarlarından eşleştir"); return }
+        val names = bonded.map { "${dname(it)}  (${it.address})" }.toTypedArray()
         AlertDialog.Builder(this).setTitle("Cihaz seç")
-            .setItems(names) { _, i -> connect(bonded[i]) }
-            .show()
+            .setItems(names) { _, i -> connect(bonded[i]) }.show()
     }
 
     @SuppressLint("MissingPermission")
-    private fun deviceName(d: BluetoothDevice): String = try { d.name ?: "?" } catch (e: SecurityException) { "?" }
+    private fun dname(d: BluetoothDevice) = try { d.name ?: "?" } catch (e: SecurityException) { "?" }
 
     @SuppressLint("MissingPermission")
-    private var lastErr = ""
-
     private fun connect(dev: BluetoothDevice) {
-        if (Build.VERSION.SDK_INT >= 31 &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-            ui.post { status.text = "İzin yok: Bluetooth bağlan izni ver" }
-            ensurePermission(); return
-        }
-        ui.post { status.text = "Bağlanıyor..." }
-        Thread {
-            adapter?.cancelDiscovery()
-            try { Thread.sleep(200) } catch (_: Exception) {}
-            val s = openSocket(dev)
-            if (s == null) { connected = false; ui.post { status.text = "Bağlanamadı: $lastErr" }; return@Thread }
-            socket = s; out = s.outputStream; connected = true
-            ui.post { status.text = "Bağlı: ${deviceName(dev)}" }
-            sendConfig()
-        }.start()
-    }
-
-    // HC-05/06 için sağlam bağlantı: güvensiz -> güvenli -> yansıma. Başarısız soketi kapat, bekle, tekrar dene.
-    @SuppressLint("MissingPermission")
-    private fun openSocket(dev: BluetoothDevice): BluetoothSocket? {
-        val makers = mutableListOf<() -> BluetoothSocket>(
-            // en güvenilir: doğrudan kanal 1 (SPP keşfini atlar)
-            { dev.javaClass.getMethod("createInsecureRfcommSocket", Int::class.javaPrimitiveType).invoke(dev, 1) as BluetoothSocket },
-            { dev.javaClass.getMethod("createRfcommSocket", Int::class.javaPrimitiveType).invoke(dev, 1) as BluetoothSocket },
-            { dev.createInsecureRfcommSocketToServiceRecord(SPP) },
-            { dev.createRfcommSocketToServiceRecord(SPP) }
-        )
-        // modülün kendi kayıtlı UUID'leriyle de dene
-        try { dev.uuids?.forEach { u -> makers.add { dev.createInsecureRfcommSocketToServiceRecord(u.uuid) } } } catch (_: Exception) {}
-        // kanal 2 ve 3 de dene (bazı klonlar farklı kanalda)
-        for (ch in intArrayOf(2, 3)) makers.add { dev.javaClass.getMethod("createInsecureRfcommSocket", Int::class.javaPrimitiveType).invoke(dev, ch) as BluetoothSocket }
-        // iki tur dene (modül bazen 2. seferde açılır)
-        for (round in 0 until 2) {
-            for (make in makers) {
-                var s: BluetoothSocket? = null
-                try {
-                    adapter?.cancelDiscovery()
-                    s = make()
-                    s.connect()
-                    return s
-                } catch (e: Exception) {
-                    lastErr = "${e.javaClass.simpleName}: ${e.message}"
-                    try { s?.close() } catch (_: Exception) {}
-                    try { Thread.sleep(500) } catch (_: InterruptedException) {}
-                }
-            }
-        }
-        return null
+        ui.post { status.text = "Bağlanıyor (BLE)..." }
+        gatt?.close()
+        gatt = dev.connectGatt(this, false, gattCb, BluetoothDevice.TRANSPORT_LE)
     }
 
     private fun disconnect() {
         connected = false
-        try { out?.close(); socket?.close() } catch (_: Exception) {}
-        out = null; socket = null
-        status.text = "Bağlı değil"
+        try { gatt?.disconnect(); gatt?.close() } catch (_: Exception) {}
+        gatt = null; writeChar = null
+        ui.post { status.text = "Bağlı değil" }
     }
 
+    private val gattCb = object : BluetoothGattCallback() {
+        @SuppressLint("MissingPermission")
+        override fun onConnectionStateChange(g: BluetoothGatt, st: Int, newState: Int) {
+            if (newState == BluetoothProfile.STATE_CONNECTED) {
+                ui.post { status.text = "Bağlandı, servis aranıyor..." }
+                g.requestMtu(64)
+                g.discoverServices()
+            } else {
+                connected = false
+                ui.post { status.text = "Bağlantı koptu" }
+            }
+        }
+
+        @SuppressLint("MissingPermission")
+        override fun onServicesDiscovered(g: BluetoothGatt, st: Int) {
+            var w: BluetoothGattCharacteristic? = null
+            var n: BluetoothGattCharacteristic? = null
+            g.getService(FFE0)?.getCharacteristic(FFE1)?.let { w = it; n = it }
+            if (w == null) g.getService(NUS)?.let { s ->
+                w = s.getCharacteristic(NUS_W); n = s.getCharacteristic(NUS_N)
+            }
+            if (w == null) {
+                outer@ for (s in g.services) for (c in s.characteristics) {
+                    val p = c.properties
+                    if (p and (BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0) {
+                        w = c
+                        if (p and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0) n = c
+                        break@outer
+                    }
+                }
+            }
+            writeChar = w
+            if (w == null) { ui.post { status.text = "Seri karakteristik bulunamadı" }; return }
+            n?.let { ch ->
+                g.setCharacteristicNotification(ch, true)
+                ch.getDescriptor(CCCD)?.let { d ->
+                    if (Build.VERSION.SDK_INT >= 33) g.writeDescriptor(d, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                    else { @Suppress("DEPRECATION") run { d.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE; g.writeDescriptor(d) } }
+                }
+            }
+            connected = true
+            ui.post { status.text = "Bağlı ✓" }
+            sendConfig()
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    @Synchronized
+    private fun writeCmd(s: String) {
+        val g = gatt ?: return
+        val c = writeChar ?: return
+        val bytes = (s + "\n").toByteArray()
+        try {
+            if (Build.VERSION.SDK_INT >= 33) {
+                g.writeCharacteristic(c, bytes, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
+            } else {
+                @Suppress("DEPRECATION") run {
+                    c.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                    c.value = bytes
+                    g.writeCharacteristic(c)
+                }
+            }
+        } catch (_: Exception) {}
+    }
+
+    private fun sendConfig() = writeCmd("C,$maxPct,$minPwm")
+
     private fun startSender() {
-        sender = Thread {
+        Thread {
             while (true) {
-                if (connected) sendLine("D,$throttle,$steer")
-                try { Thread.sleep(50) } catch (_: InterruptedException) { break } // 20 Hz
+                if (connected) writeCmd("D,$throttle,$steer")
+                try { Thread.sleep(60) } catch (_: InterruptedException) { break }
             }
         }.apply { isDaemon = true; start() }
     }
 
-    private fun sendConfig() = sendLine("C,$maxPct,$minPwm")
-
-    @Synchronized
-    private fun sendLine(s: String) {
-        val o = out ?: return
-        try { o.write((s + "\n").toByteArray()) } catch (e: Exception) {
-            connected = false; ui.post { status.text = "Bağlantı koptu" }
-        }
-    }
-
     private fun toast(m: String) = Toast.makeText(this, m, Toast.LENGTH_SHORT).show()
 
-    override fun onStop() { super.onStop(); throttle = 0; steer = 0; sendLine("S") }
+    override fun onStop() { super.onStop(); throttle = 0; steer = 0; writeCmd("S") }
     override fun onDestroy() { super.onDestroy(); disconnect() }
 }
