@@ -150,18 +150,32 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("MissingPermission")
     private fun connect(dev: BluetoothDevice) {
         Thread {
-            try {
-                adapter?.cancelDiscovery()
-                val s = dev.createRfcommSocketToServiceRecord(SPP)
-                s.connect()
-                socket = s; out = s.outputStream; connected = true
-                ui.post { status.text = "Bağlı: ${deviceName(dev)}" }
-                sendConfig()
-            } catch (e: Exception) {
-                connected = false
-                ui.post { status.text = "Bağlanamadı: ${e.message}" }
-            }
+            adapter?.cancelDiscovery()
+            val s = openSocket(dev)
+            if (s == null) { connected = false; ui.post { status.text = "Bağlanamadı (HC-05 açık ve eşli mi?)" }; return@Thread }
+            socket = s; out = s.outputStream; connected = true
+            ui.post { status.text = "Bağlı: ${deviceName(dev)}" }
+            sendConfig()
         }.start()
+    }
+
+    // HC-05 için sağlam bağlantı: güvenli -> güvensiz -> yansıma (createRfcommSocket kanal 1)
+    @SuppressLint("MissingPermission")
+    private fun openSocket(dev: BluetoothDevice): BluetoothSocket? {
+        try {
+            val s = dev.createRfcommSocketToServiceRecord(SPP)
+            s.connect(); return s
+        } catch (_: Exception) {}
+        try {
+            val s = dev.createInsecureRfcommSocketToServiceRecord(SPP)
+            s.connect(); return s
+        } catch (_: Exception) {}
+        try {
+            val m = dev.javaClass.getMethod("createRfcommSocket", Int::class.javaPrimitiveType)
+            val s = m.invoke(dev, 1) as BluetoothSocket
+            s.connect(); return s
+        } catch (_: Exception) {}
+        return null
     }
 
     private fun disconnect() {
