@@ -159,22 +159,26 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
-    // HC-05 için sağlam bağlantı: güvenli -> güvensiz -> yansıma (createRfcommSocket kanal 1)
+    // HC-05/06 için sağlam bağlantı: güvensiz -> güvenli -> yansıma. Başarısız soketi kapat, bekle, tekrar dene.
     @SuppressLint("MissingPermission")
     private fun openSocket(dev: BluetoothDevice): BluetoothSocket? {
-        try {
-            val s = dev.createRfcommSocketToServiceRecord(SPP)
-            s.connect(); return s
-        } catch (_: Exception) {}
-        try {
-            val s = dev.createInsecureRfcommSocketToServiceRecord(SPP)
-            s.connect(); return s
-        } catch (_: Exception) {}
-        try {
-            val m = dev.javaClass.getMethod("createRfcommSocket", Int::class.javaPrimitiveType)
-            val s = m.invoke(dev, 1) as BluetoothSocket
-            s.connect(); return s
-        } catch (_: Exception) {}
+        val makers: List<() -> BluetoothSocket> = listOf(
+            { dev.createInsecureRfcommSocketToServiceRecord(SPP) },
+            { dev.createRfcommSocketToServiceRecord(SPP) },
+            { dev.javaClass.getMethod("createRfcommSocket", Int::class.javaPrimitiveType).invoke(dev, 1) as BluetoothSocket }
+        )
+        for (make in makers) {
+            var s: BluetoothSocket? = null
+            try {
+                adapter?.cancelDiscovery()
+                s = make()
+                s.connect()
+                return s
+            } catch (e: Exception) {
+                try { s?.close() } catch (_: Exception) {}
+                try { Thread.sleep(400) } catch (_: InterruptedException) {}
+            }
+        }
         return null
     }
 
