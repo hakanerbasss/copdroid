@@ -171,13 +171,17 @@ class MainActivity : AppCompatActivity() {
     // HC-05/06 için sağlam bağlantı: güvensiz -> güvenli -> yansıma. Başarısız soketi kapat, bekle, tekrar dene.
     @SuppressLint("MissingPermission")
     private fun openSocket(dev: BluetoothDevice): BluetoothSocket? {
-        val makers: List<() -> BluetoothSocket> = listOf(
+        val makers = mutableListOf<() -> BluetoothSocket>(
             // en güvenilir: doğrudan kanal 1 (SPP keşfini atlar)
             { dev.javaClass.getMethod("createInsecureRfcommSocket", Int::class.javaPrimitiveType).invoke(dev, 1) as BluetoothSocket },
             { dev.javaClass.getMethod("createRfcommSocket", Int::class.javaPrimitiveType).invoke(dev, 1) as BluetoothSocket },
             { dev.createInsecureRfcommSocketToServiceRecord(SPP) },
             { dev.createRfcommSocketToServiceRecord(SPP) }
         )
+        // modülün kendi kayıtlı UUID'leriyle de dene
+        try { dev.uuids?.forEach { u -> makers.add { dev.createInsecureRfcommSocketToServiceRecord(u.uuid) } } } catch (_: Exception) {}
+        // kanal 2 ve 3 de dene (bazı klonlar farklı kanalda)
+        for (ch in intArrayOf(2, 3)) makers.add { dev.javaClass.getMethod("createInsecureRfcommSocket", Int::class.javaPrimitiveType).invoke(dev, ch) as BluetoothSocket }
         // iki tur dene (modül bazen 2. seferde açılır)
         for (round in 0 until 2) {
             for (make in makers) {
