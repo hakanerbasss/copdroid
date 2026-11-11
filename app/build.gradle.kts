@@ -11,8 +11,8 @@ android {
         applicationId = "com.wizaicorp.copdroid"
         minSdk = 23
         targetSdk = 35
-        versionCode = 8
-        versionName = "0.8"
+        versionCode = 9
+        versionName = "0.9"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

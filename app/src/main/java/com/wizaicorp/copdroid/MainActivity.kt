@@ -159,12 +159,14 @@ class MainActivity : AppCompatActivity() {
         ui.post { status.text = "Bağlı değil" }
     }
 
+    private var writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+    @Volatile private var busy = false
+
     private val gattCb = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(g: BluetoothGatt, st: Int, newState: Int) {
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 ui.post { status.text = "Bağlandı, servis aranıyor..." }
-                g.requestMtu(64)
                 g.discoverServices()
             } else {
                 connected = false
@@ -190,19 +192,37 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }
-            writeChar = w
-            if (w == null) { ui.post { status.text = "Seri karakteristik bulunamadı" }; return }
-            n?.let { ch ->
-                g.setCharacteristicNotification(ch, true)
-                ch.getDescriptor(CCCD)?.let { d ->
-                    if (Build.VERSION.SDK_INT >= 33) g.writeDescriptor(d, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
-                    else { @Suppress("DEPRECATION") run { d.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE; g.writeDescriptor(d) } }
-                }
+            val wc = w
+            writeChar = wc
+            if (wc == null) { ui.post { status.text = "Seri karakteristik bulunamadı" }; return }
+            // yazma tipini karakteristiğin özelliğinden seç
+            writeType = if (wc.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0)
+                BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+            else BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+
+            val nc = n
+            val cccd = nc?.getDescriptor(CCCD)
+            if (nc != null && cccd != null) {
+                g.setCharacteristicNotification(nc, true)
+                // bildirim ayarlanınca (onDescriptorWrite) bağlı say ve yazmaya başla
+                if (Build.VERSION.SDK_INT >= 33) g.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                else { @Suppress("DEPRECATION") run { cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE; g.writeDescriptor(cccd) } }
+            } else {
+                goReady()
             }
-            connected = true
-            ui.post { status.text = "Bağlı ✓" }
-            sendConfig()
         }
+
+        override fun onDescriptorWrite(g: BluetoothGatt, d: BluetoothGattDescriptor, st: Int) { goReady() }
+
+        override fun onCharacteristicWrite(g: BluetoothGatt, c: BluetoothGattCharacteristic, st: Int) { busy = false }
+    }
+
+    private fun goReady() {
+        if (connected) return
+        busy = false
+        connected = true
+        ui.post { status.text = "Bağlı ✓" }
+        sendConfig()
     }
 
     @SuppressLint("MissingPermission")
@@ -210,18 +230,20 @@ class MainActivity : AppCompatActivity() {
     private fun writeCmd(s: String) {
         val g = gatt ?: return
         val c = writeChar ?: return
+        if (writeType == BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT && busy) return // cevaplı yazmada çakışmayı önle
         val bytes = (s + "\n").toByteArray()
         try {
+            if (writeType == BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) busy = true
             if (Build.VERSION.SDK_INT >= 33) {
-                g.writeCharacteristic(c, bytes, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
+                g.writeCharacteristic(c, bytes, writeType)
             } else {
                 @Suppress("DEPRECATION") run {
-                    c.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                    c.writeType = writeType
                     c.value = bytes
                     g.writeCharacteristic(c)
                 }
             }
-        } catch (_: Exception) {}
+        } catch (_: Exception) { busy = false }
     }
 
     private fun sendConfig() = writeCmd("C,$maxPct,$minPwm")
