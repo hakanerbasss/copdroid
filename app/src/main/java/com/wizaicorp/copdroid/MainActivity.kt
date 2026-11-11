@@ -172,21 +172,26 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("MissingPermission")
     private fun openSocket(dev: BluetoothDevice): BluetoothSocket? {
         val makers: List<() -> BluetoothSocket> = listOf(
+            // en güvenilir: doğrudan kanal 1 (SPP keşfini atlar)
+            { dev.javaClass.getMethod("createInsecureRfcommSocket", Int::class.javaPrimitiveType).invoke(dev, 1) as BluetoothSocket },
+            { dev.javaClass.getMethod("createRfcommSocket", Int::class.javaPrimitiveType).invoke(dev, 1) as BluetoothSocket },
             { dev.createInsecureRfcommSocketToServiceRecord(SPP) },
-            { dev.createRfcommSocketToServiceRecord(SPP) },
-            { dev.javaClass.getMethod("createRfcommSocket", Int::class.javaPrimitiveType).invoke(dev, 1) as BluetoothSocket }
+            { dev.createRfcommSocketToServiceRecord(SPP) }
         )
-        for (make in makers) {
-            var s: BluetoothSocket? = null
-            try {
-                adapter?.cancelDiscovery()
-                s = make()
-                s.connect()
-                return s
-            } catch (e: Exception) {
-                lastErr = "${e.javaClass.simpleName}: ${e.message}"
-                try { s?.close() } catch (_: Exception) {}
-                try { Thread.sleep(400) } catch (_: InterruptedException) {}
+        // iki tur dene (modül bazen 2. seferde açılır)
+        for (round in 0 until 2) {
+            for (make in makers) {
+                var s: BluetoothSocket? = null
+                try {
+                    adapter?.cancelDiscovery()
+                    s = make()
+                    s.connect()
+                    return s
+                } catch (e: Exception) {
+                    lastErr = "${e.javaClass.simpleName}: ${e.message}"
+                    try { s?.close() } catch (_: Exception) {}
+                    try { Thread.sleep(500) } catch (_: InterruptedException) {}
+                }
             }
         }
         return null
