@@ -38,6 +38,8 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var steer = 0      // -100..100
     private var maxPct = 40
     private var minPwm = 25
+    private var cruiseOn = false
+    private var cruiseLevel = 20
 
     private val ui = Handler(Looper.getMainLooper())
     private lateinit var status: TextView
@@ -68,7 +70,25 @@ class MainActivity : AppCompatActivity() {
             text = "ACİL DUR"
             setBackgroundColor(0xFFD32F2F.toInt())
             setTextColor(0xFFFFFFFF.toInt())
-            setOnClickListener { throttle = 0; steer = 0; sendLine("S") }
+            setOnClickListener { throttle = 0; steer = 0; cruiseOn = false; sendLine("S") }
+        }
+
+        val cruiseLabel = TextView(this).apply { text = "Yürüyüş hızı: %$cruiseLevel" }
+        val cruiseBar = SeekBar(this).apply {
+            max = 100; progress = cruiseLevel
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar, p: Int, u: Boolean) { cruiseLevel = p; cruiseLabel.text = "Yürüyüş hızı: %$p" }
+                override fun onStartTrackingTouch(sb: SeekBar) {}
+                override fun onStopTrackingTouch(sb: SeekBar) { if (cruiseOn) sendLine("W,1,$cruiseLevel") }
+            })
+        }
+        val btnCruise = Button(this).apply {
+            text = "Yürüyüş modu: KAPALI"
+            setOnClickListener {
+                cruiseOn = !cruiseOn
+                text = if (cruiseOn) "Yürüyüş modu: AÇIK (sabit $cruiseLevel)" else "Yürüyüş modu: KAPALI"
+                sendLine(if (cruiseOn) "W,1,$cruiseLevel" else "W,0")
+            }
         }
 
         val joy = JoystickView(this).apply {
@@ -100,7 +120,7 @@ class MainActivity : AppCompatActivity() {
             })
         }
 
-        for (v in listOf(title, status, btnConnect, joy, maxLabel, maxBar, minLabel, minBar, btnStop)) root.addView(v)
+        for (v in listOf(title, status, btnConnect, joy, maxLabel, maxBar, minLabel, minBar, cruiseLabel, cruiseBar, btnCruise, btnStop)) root.addView(v)
         return root
     }
 
