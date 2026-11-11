@@ -148,11 +148,20 @@ class MainActivity : AppCompatActivity() {
     private fun deviceName(d: BluetoothDevice): String = try { d.name ?: "?" } catch (e: SecurityException) { "?" }
 
     @SuppressLint("MissingPermission")
+    private var lastErr = ""
+
     private fun connect(dev: BluetoothDevice) {
+        if (Build.VERSION.SDK_INT >= 31 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+            ui.post { status.text = "İzin yok: Bluetooth bağlan izni ver" }
+            ensurePermission(); return
+        }
+        ui.post { status.text = "Bağlanıyor..." }
         Thread {
             adapter?.cancelDiscovery()
+            try { Thread.sleep(200) } catch (_: Exception) {}
             val s = openSocket(dev)
-            if (s == null) { connected = false; ui.post { status.text = "Bağlanamadı (HC-05 açık ve eşli mi?)" }; return@Thread }
+            if (s == null) { connected = false; ui.post { status.text = "Bağlanamadı: $lastErr" }; return@Thread }
             socket = s; out = s.outputStream; connected = true
             ui.post { status.text = "Bağlı: ${deviceName(dev)}" }
             sendConfig()
@@ -175,6 +184,7 @@ class MainActivity : AppCompatActivity() {
                 s.connect()
                 return s
             } catch (e: Exception) {
+                lastErr = "${e.javaClass.simpleName}: ${e.message}"
                 try { s?.close() } catch (_: Exception) {}
                 try { Thread.sleep(400) } catch (_: InterruptedException) {}
             }
