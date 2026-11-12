@@ -52,7 +52,8 @@ class MainActivity : AppCompatActivity() {
     private var maxPct = 40
     private var minPwm = 100
     private var cruiseOn = false
-    private var cruiseLevel = 20
+    private var cruiseLevel = 40
+    private var btnCruiseRef: Button? = null
 
     private val ui = Handler(Looper.getMainLooper())
     private lateinit var status: TextView
@@ -84,6 +85,17 @@ class MainActivity : AppCompatActivity() {
         text = label; setTextColor(fg); isAllCaps = false; textSize = 16f
         background = roundBg(bg); stateListAnimator = null
         setPadding(dp(16), dp(14), dp(16), dp(14))
+        setOnTouchListener { v, e ->
+            when (e.action) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    v.animate().scaleX(0.94f).scaleY(0.94f).alpha(0.8f).setDuration(70).start()
+                    v.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
+                }
+                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL ->
+                    v.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(110).start()
+            }
+            false
+        }
     }
     private fun card(): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
@@ -182,23 +194,19 @@ class MainActivity : AppCompatActivity() {
         val cruiseLabel = lbl("Yürüyüş hızı: %$cruiseLevel", 13f, TXT)
         val cruiseBar = SeekBar(this).apply {
             max = 100; progress = cruiseLevel
-            setOnSeekBarChangeListener(simpleBar({ cruiseLevel = it; cruiseLabel.text = "Yürüyüş hızı: %$it" }, { if (cruiseOn) writeCmd("W,1,$cruiseLevel") }))
+            setOnSeekBarChangeListener(simpleBar({ cruiseLevel = it; cruiseLabel.text = "Yürüyüş hızı: %$it" }, { refreshCruiseBtn() }))
         }
         val btnCruise = styledBtn("Yürüyüş: KAPALI", 0xFF37474F.toInt()).apply {
             layoutParams = lp(8)
-            setOnClickListener {
-                cruiseOn = !cruiseOn
-                text = if (cruiseOn) "Yürüyüş: AÇIK ($cruiseLevel)" else "Yürüyüş: KAPALI"
-                background = roundBg(if (cruiseOn) GREEN else 0xFF37474F.toInt())
-                writeCmd(if (cruiseOn) "W,1,$cruiseLevel" else "W,0")
-            }
+            setOnClickListener { cruiseOn = !cruiseOn; refreshCruiseBtn() }
         }
+        btnCruiseRef = btnCruise
         walkCard.addView(cruiseLabel); walkCard.addView(cruiseBar); walkCard.addView(btnCruise)
         mid.addView(walkCard)
 
         val btnStop = styledBtn("■  ACİL DUR", RED).apply {
             textSize = 18f; layoutParams = lp(10)
-            setOnClickListener { throttle = 0; steer = 0; cruiseOn = false; writeCmd("S"); btnCruise.text = "Yürüyüş: KAPALI"; btnCruise.background = roundBg(0xFF37474F.toInt()) }
+            setOnClickListener { throttle = 0; steer = 0; cruiseOn = false; refreshCruiseBtn(); writeCmd("S") }
         }
         mid.addView(btnStop)
 
@@ -224,6 +232,12 @@ class MainActivity : AppCompatActivity() {
         row.addView(rightCol)
 
         return row
+    }
+
+    private fun refreshCruiseBtn() = ui.post {
+        val b = btnCruiseRef ?: return@post
+        b.text = if (cruiseOn) "Yürüyüş: AÇIK (%$cruiseLevel)" else "Yürüyüş: KAPALI"
+        b.background = roundBg(if (cruiseOn) GREEN else 0xFF37474F.toInt())
     }
 
     private fun simpleBar(onChange: (Int) -> Unit, onStop: () -> Unit) = object : SeekBar.OnSeekBarChangeListener {
@@ -336,6 +350,16 @@ class MainActivity : AppCompatActivity() {
 
         override fun onDescriptorWrite(g: BluetoothGatt, d: BluetoothGattDescriptor, st: Int) { goReady() }
 
+        private fun onRx(b: ByteArray) {
+            val t = String(b).trim()
+            if (t.startsWith("CR,0")) { cruiseOn = false; refreshCruiseBtn() }
+        }
+        @Deprecated("old API")
+        override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic) {
+            @Suppress("DEPRECATION") onRx(c.value ?: return)
+        }
+        override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic, value: ByteArray) { onRx(value) }
+
         override fun onCharacteristicWrite(g: BluetoothGatt, c: BluetoothGattCharacteristic, st: Int) { busy = false }
     }
 
@@ -370,10 +394,16 @@ class MainActivity : AppCompatActivity() {
 
     private fun sendConfig() = writeCmd("C,$maxPct,$minPwm")
 
+    private var tick = 0
     private fun startSender() {
         Thread {
             while (true) {
-                if (connected) writeCmd("D,$throttle,$steer")
+                if (connected) {
+                    if (cruiseOn && throttle < -50) { cruiseOn = false; refreshCruiseBtn() } // stick'i geri çek = iptal
+                    writeCmd("D,$throttle,$steer,${if (cruiseOn) 1 else 0},$cruiseLevel")
+                    tick++
+                    if (tick % 20 == 0) sendConfig() // ayar kaybolmasın
+                }
                 try { Thread.sleep(60) } catch (_: InterruptedException) { break }
             }
         }.apply { isDaemon = true; start() }
