@@ -244,11 +244,24 @@ class MainActivity : AppCompatActivity() {
     private fun pickAndConnect() {
         val a = adapter ?: run { toast("Bluetooth yok"); return }
         if (!a.isEnabled) { toast("Bluetooth'u aç"); return }
-        val bonded = try { a.bondedDevices.toList() } catch (e: SecurityException) { toast("İzin gerekli"); return }
-        if (bonded.isEmpty()) { toast("Önce modülü telefon ayarlarından eşleştir"); return }
-        val names = bonded.map { "${dname(it)}  (${it.address})" }.toTypedArray()
-        AlertDialog.Builder(this).setTitle("Cihaz seç")
-            .setItems(names) { _, i -> connect(bonded[i]) }.show()
+        val scanner = a.bluetoothLeScanner ?: run { toast("BLE tarayıcı yok"); return }
+        val found = LinkedHashMap<String, BluetoothDevice>()
+        try { a.bondedDevices.forEach { found[it.address] = it } } catch (_: SecurityException) {}
+        ui.post { status.text = "Taranıyor (6 sn)..." }
+        val cb = object : android.bluetooth.le.ScanCallback() {
+            override fun onScanResult(type: Int, r: android.bluetooth.le.ScanResult) { found[r.device.address] = r.device }
+            override fun onScanFailed(code: Int) { ui.post { toast("Tarama hatası: $code") } }
+        }
+        try { scanner.startScan(cb) } catch (e: SecurityException) { toast("İzin gerekli"); return }
+        ui.postDelayed({
+            try { scanner.stopScan(cb) } catch (_: Exception) {}
+            ui.post { status.text = "Bağlı değil" }
+            if (found.isEmpty()) { toast("Cihaz bulunamadı"); return@postDelayed }
+            val list = found.values.sortedByDescending { dname(it) != "?" }
+            val names = list.map { "${dname(it)}  (${it.address})" }.toTypedArray()
+            AlertDialog.Builder(this).setTitle("Cihaz seç")
+                .setItems(names) { _, i -> connect(list[i]) }.show()
+        }, 6000)
     }
 
     @SuppressLint("MissingPermission")
