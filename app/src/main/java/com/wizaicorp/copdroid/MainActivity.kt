@@ -10,6 +10,9 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothProfile
 import android.content.pm.PackageManager
+import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -18,6 +21,7 @@ import android.view.Gravity
 import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
@@ -52,69 +56,174 @@ class MainActivity : AppCompatActivity() {
 
     private val ui = Handler(Looper.getMainLooper())
     private lateinit var status: TextView
+    private lateinit var readout: TextView
+
+    // renkler
+    private val BG = 0xFF0E1116.toInt()
+    private val SURFACE = 0xFF1B2029.toInt()
+    private val ACCENT = 0xFF3D5AFE.toInt()
+    private val GREEN = 0xFF00C853.toInt()
+    private val RED = 0xFFE53935.toInt()
+    private val TXT = 0xFFECEFF1.toInt()
+    private val TXT2 = 0xFF90A4AE.toInt()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(buildUi())
         ensurePermission()
         startSender()
+        startReadout()
     }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).roundToInt()
 
-    private fun buildUi(): View {
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(16), dp(16), dp(16))
-        }
-        val title = TextView(this).apply { text = "CopDroid — Çöp Aracı Kumanda (BLE)"; textSize = 18f }
-        status = TextView(this).apply { text = "Bağlı değil"; textSize = 14f }
+    private fun roundBg(color: Int, r: Int = 14) = GradientDrawable().apply {
+        setColor(color); cornerRadius = dp(r).toFloat()
+    }
+    private fun styledBtn(label: String, bg: Int, fg: Int = Color.WHITE): Button = Button(this).apply {
+        text = label; setTextColor(fg); isAllCaps = false; textSize = 16f
+        background = roundBg(bg); stateListAnimator = null
+        setPadding(dp(16), dp(14), dp(16), dp(14))
+    }
+    private fun card(): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        background = roundBg(SURFACE, 16); setPadding(dp(16), dp(14), dp(16), dp(14))
+    }
+    private fun lbl(t: String, size: Float = 14f, color: Int = TXT2, bold: Boolean = false) = TextView(this).apply {
+        text = t; textSize = size; setTextColor(color); if (bold) setTypeface(typeface, Typeface.BOLD)
+    }
+    private fun lp(top: Int = 0) = LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+    ).apply { topMargin = dp(top) }
 
-        val btnConnect = Button(this).apply {
-            text = "Bağlan"
+    private fun setStatus(msg: String) = ui.post {
+        status.text = msg
+        val c = when { msg.contains("✓") -> GREEN; msg.contains("Bağlanıyor") || msg.contains("servis") -> 0xFFFFB300.toInt(); else -> RED }
+        status.setTextColor(c)
+        status.background = roundBg(SURFACE, 20)
+        status.setPadding(dp(12), dp(6), dp(12), dp(6))
+    }
+
+    private fun startReadout() {
+        val r = object : Runnable {
+            override fun run() {
+                val t = throttle; val s = steer
+                readout.text = if (!connected) "—" else "İleri %$t   ·   Dönüş %$s"
+                readout.setTextColor(if (connected) TXT else TXT2)
+                ui.postDelayed(this, 120)
+            }
+        }
+        ui.postDelayed(r, 200)
+    }
+
+    private fun buildUi(): View {
+        // Yatay gamepad: SOL stick = ileri/geri, ORTA = ayarlar, SAĞ stick = sağ/sol
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor(BG); setPadding(dp(10), dp(10), dp(10), dp(10))
+        }
+
+        // ---- SOL: İLERİ / GERİ stick ----
+        val leftCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
+        }
+        leftCol.addView(lbl("İLERİ / GERİ", 12f, TXT2, true).apply { gravity = Gravity.CENTER })
+        val throttlePanel = LinearLayout(this).apply {
+            gravity = Gravity.CENTER; background = roundBg(SURFACE, 24)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).apply { topMargin = dp(6) }
+        }
+        val throttleStick = JoystickView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(210), dp(210))
+            listener = { _, y -> throttle = (y * 100).roundToInt().coerceIn(-100, 100) }
+        }
+        throttlePanel.addView(throttleStick)
+        leftCol.addView(throttlePanel)
+        row.addView(leftCol)
+
+        // ---- ORTA: ayarlar ----
+        val centerScroll = ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.25f)
+        }
+        val mid = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(10), 0, dp(10), 0) }
+
+        val topRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        status = TextView(this).apply { textSize = 13f }
+        val btnConnect = styledBtn("Bağlan", ACCENT).apply {
             setOnClickListener { if (connected) disconnect() else pickAndConnect() }
         }
-        val btnStop = Button(this).apply {
-            text = "ACİL DUR"; setBackgroundColor(0xFFD32F2F.toInt()); setTextColor(0xFFFFFFFF.toInt())
-            setOnClickListener { throttle = 0; steer = 0; cruiseOn = false; writeCmd("S") }
-        }
+        topRow.addView(status, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        topRow.addView(btnConnect)
+        mid.addView(topRow)
+        setStatus("Bağlı değil")
 
-        val joy = JoystickView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(dp(260), dp(260)).apply {
-                gravity = Gravity.CENTER_HORIZONTAL; topMargin = dp(12); bottomMargin = dp(12)
-            }
-            listener = { x, y ->
-                throttle = (y * 100).roundToInt().coerceIn(-100, 100)
-                steer = (x * 100).roundToInt().coerceIn(-100, 100)
-            }
+        readout = TextView(this).apply {
+            text = "—"; textSize = 16f; setTextColor(TXT2); gravity = Gravity.CENTER
+            setTypeface(typeface, Typeface.BOLD); layoutParams = lp(8)
         }
+        mid.addView(readout)
 
-        val maxLabel = TextView(this).apply { text = "Azami hız: %$maxPct" }
+        val speedCard = card().apply { layoutParams = lp(10) }
+        val maxLabel = lbl("Azami hız: %$maxPct", 13f, TXT)
         val maxBar = SeekBar(this).apply {
             max = 100; progress = maxPct
             setOnSeekBarChangeListener(simpleBar({ maxPct = it; maxLabel.text = "Azami hız: %$it" }, { sendConfig() }))
         }
-        val minLabel = TextView(this).apply { text = "Başlangıç gücü: $minPwm" }
+        val minLabel = lbl("Başlangıç gücü: $minPwm", 13f, TXT).apply { layoutParams = lp(8) }
         val minBar = SeekBar(this).apply {
             max = 160; progress = minPwm
             setOnSeekBarChangeListener(simpleBar({ minPwm = it; minLabel.text = "Başlangıç gücü: $it" }, { sendConfig() }))
         }
-        val cruiseLabel = TextView(this).apply { text = "Yürüyüş hızı: %$cruiseLevel" }
+        speedCard.addView(maxLabel); speedCard.addView(maxBar)
+        speedCard.addView(minLabel); speedCard.addView(minBar)
+        mid.addView(speedCard)
+
+        val walkCard = card().apply { layoutParams = lp(8) }
+        val cruiseLabel = lbl("Yürüyüş hızı: %$cruiseLevel", 13f, TXT)
         val cruiseBar = SeekBar(this).apply {
             max = 100; progress = cruiseLevel
             setOnSeekBarChangeListener(simpleBar({ cruiseLevel = it; cruiseLabel.text = "Yürüyüş hızı: %$it" }, { if (cruiseOn) writeCmd("W,1,$cruiseLevel") }))
         }
-        val btnCruise = Button(this).apply {
-            text = "Yürüyüş modu: KAPALI"
+        val btnCruise = styledBtn("Yürüyüş: KAPALI", 0xFF37474F.toInt()).apply {
+            layoutParams = lp(8)
             setOnClickListener {
                 cruiseOn = !cruiseOn
-                text = if (cruiseOn) "Yürüyüş modu: AÇIK (sabit $cruiseLevel)" else "Yürüyüş modu: KAPALI"
+                text = if (cruiseOn) "Yürüyüş: AÇIK ($cruiseLevel)" else "Yürüyüş: KAPALI"
+                background = roundBg(if (cruiseOn) GREEN else 0xFF37474F.toInt())
                 writeCmd(if (cruiseOn) "W,1,$cruiseLevel" else "W,0")
             }
         }
+        walkCard.addView(cruiseLabel); walkCard.addView(cruiseBar); walkCard.addView(btnCruise)
+        mid.addView(walkCard)
 
-        for (v in listOf(title, status, btnConnect, joy, maxLabel, maxBar, minLabel, minBar, cruiseLabel, cruiseBar, btnCruise, btnStop)) root.addView(v)
-        return root
+        val btnStop = styledBtn("■  ACİL DUR", RED).apply {
+            textSize = 18f; layoutParams = lp(10)
+            setOnClickListener { throttle = 0; steer = 0; cruiseOn = false; writeCmd("S"); btnCruise.text = "Yürüyüş: KAPALI"; btnCruise.background = roundBg(0xFF37474F.toInt()) }
+        }
+        mid.addView(btnStop)
+
+        centerScroll.addView(mid)
+        row.addView(centerScroll)
+
+        // ---- SAĞ: SOL / SAĞ stick ----
+        val rightCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
+        }
+        rightCol.addView(lbl("SOL / SAĞ", 12f, TXT2, true).apply { gravity = Gravity.CENTER })
+        val steerPanel = LinearLayout(this).apply {
+            gravity = Gravity.CENTER; background = roundBg(SURFACE, 24)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).apply { topMargin = dp(6) }
+        }
+        val steerStick = JoystickView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(210), dp(210))
+            listener = { x, _ -> steer = (x * 100).roundToInt().coerceIn(-100, 100) }
+        }
+        steerPanel.addView(steerStick)
+        rightCol.addView(steerPanel)
+        row.addView(rightCol)
+
+        return row
     }
 
     private fun simpleBar(onChange: (Int) -> Unit, onStop: () -> Unit) = object : SeekBar.OnSeekBarChangeListener {
