@@ -29,6 +29,8 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import java.util.UUID
 import kotlin.math.roundToInt
 
@@ -81,10 +83,11 @@ class MainActivity : AppCompatActivity() {
     private fun roundBg(color: Int, r: Int = 14) = GradientDrawable().apply {
         setColor(color); cornerRadius = dp(r).toFloat()
     }
-    private fun styledBtn(label: String, bg: Int, fg: Int = Color.WHITE): Button = Button(this).apply {
-        text = label; setTextColor(fg); isAllCaps = false; textSize = 16f
+    private fun styledBtn(label: String, bg: Int, fg: Int = Color.WHITE, size: Float = 15f, vPad: Int = 8): Button = Button(this).apply {
+        text = label; setTextColor(fg); isAllCaps = false; textSize = size
+        minHeight = 0; minimumHeight = 0; minWidth = 0; minimumWidth = 0
         background = roundBg(bg); stateListAnimator = null
-        setPadding(dp(16), dp(14), dp(16), dp(14))
+        setPadding(dp(14), dp(vPad), dp(14), dp(vPad))
         setOnTouchListener { v, e ->
             when (e.action) {
                 android.view.MotionEvent.ACTION_DOWN -> {
@@ -99,7 +102,7 @@ class MainActivity : AppCompatActivity() {
     }
     private fun card(): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        background = roundBg(SURFACE, 16); setPadding(dp(16), dp(14), dp(16), dp(14))
+        background = roundBg(SURFACE, 16); setPadding(dp(12), dp(8), dp(12), dp(8))
     }
     private fun lbl(t: String, size: Float = 14f, color: Int = TXT2, bold: Boolean = false) = TextView(this).apply {
         text = t; textSize = size; setTextColor(color); if (bold) setTypeface(typeface, Typeface.BOLD)
@@ -113,7 +116,7 @@ class MainActivity : AppCompatActivity() {
         val c = when { msg.contains("✓") -> GREEN; msg.contains("Bağlanıyor") || msg.contains("servis") -> 0xFFFFB300.toInt(); else -> RED }
         status.setTextColor(c)
         status.background = roundBg(SURFACE, 20)
-        status.setPadding(dp(12), dp(6), dp(12), dp(6))
+        status.setPadding(dp(12), dp(8), dp(12), dp(8))
     }
 
     private fun startReadout() {
@@ -132,7 +135,13 @@ class MainActivity : AppCompatActivity() {
         // Yatay gamepad: SOL stick = ileri/geri, ORTA = ayarlar, SAĞ stick = sağ/sol
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(BG); setPadding(dp(10), dp(10), dp(10), dp(10))
+            setBackgroundColor(BG); setPadding(dp(8), dp(6), dp(8), dp(6))
+        }
+        // Sistem çubukları / çentik / yan navigasyon çubuğu altında kalmasın
+        ViewCompat.setOnApplyWindowInsetsListener(row) { v, insets ->
+            val b = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+            v.setPadding(b.left + dp(8), b.top + dp(6), b.right + dp(8), b.bottom + dp(6))
+            insets
         }
 
         // ---- SOL: İLERİ / GERİ stick ----
@@ -142,11 +151,11 @@ class MainActivity : AppCompatActivity() {
         }
         leftCol.addView(lbl("İLERİ / GERİ", 12f, TXT2, true).apply { gravity = Gravity.CENTER })
         val throttlePanel = LinearLayout(this).apply {
-            gravity = Gravity.CENTER; background = roundBg(SURFACE, 24)
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).apply { topMargin = dp(6) }
+            gravity = Gravity.CENTER; background = roundBg(SURFACE, 24); setPadding(dp(8), dp(8), dp(8), dp(8))
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).apply { topMargin = dp(4) }
         }
         val throttleStick = JoystickView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(dp(210), dp(210))
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.MATCH_PARENT)
             listener = { _, y -> throttle = (y * 100).roundToInt().coerceIn(-100, 100) }
         }
         throttlePanel.addView(throttleStick)
@@ -154,34 +163,40 @@ class MainActivity : AppCompatActivity() {
         row.addView(leftCol)
 
         // ---- ORTA: ayarlar ----
-        val centerScroll = ScrollView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.25f)
+        val centerCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(dp(8), 0, dp(8), 0)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.3f)
         }
-        val mid = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(10), 0, dp(10), 0) }
+        val centerScroll = ScrollView(this).apply {
+            isVerticalScrollBarEnabled = false
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+        }
+        val mid = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
         val topRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        status = TextView(this).apply { textSize = 13f }
-        val btnConnect = styledBtn("Bağlan", ACCENT).apply {
+        status = TextView(this).apply { textSize = 12f; gravity = Gravity.CENTER_VERTICAL; maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }
+        val btnConnect = styledBtn("Bağlan", ACCENT, size = 14f, vPad = 8).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(6) }
             setOnClickListener { if (connected) disconnect() else pickAndConnect() }
         }
         topRow.addView(status, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         topRow.addView(btnConnect)
-        mid.addView(topRow)
+        centerCol.addView(topRow)
         setStatus("Bağlı değil")
 
         readout = TextView(this).apply {
-            text = "—"; textSize = 16f; setTextColor(TXT2); gravity = Gravity.CENTER
-            setTypeface(typeface, Typeface.BOLD); layoutParams = lp(8)
+            text = "—"; textSize = 15f; setTextColor(TXT2); gravity = Gravity.CENTER
+            setTypeface(typeface, Typeface.BOLD); layoutParams = lp(4)
         }
-        mid.addView(readout)
+        centerCol.addView(readout)
 
-        val speedCard = card().apply { layoutParams = lp(10) }
+        val speedCard = card().apply { layoutParams = lp(6) }
         val maxLabel = lbl("Azami hız: %$maxPct", 13f, TXT)
         val maxBar = SeekBar(this).apply {
             max = 100; progress = maxPct
             setOnSeekBarChangeListener(simpleBar({ maxPct = it; maxLabel.text = "Azami hız: %$it" }, { sendConfig() }))
         }
-        val minLabel = lbl("Başlangıç gücü: $minPwm", 13f, TXT).apply { layoutParams = lp(8) }
+        val minLabel = lbl("Başlangıç gücü: $minPwm", 13f, TXT).apply { layoutParams = lp(4) }
         val minBar = SeekBar(this).apply {
             max = 160; progress = minPwm
             setOnSeekBarChangeListener(simpleBar({ minPwm = it; minLabel.text = "Başlangıç gücü: $it" }, { sendConfig() }))
@@ -190,28 +205,28 @@ class MainActivity : AppCompatActivity() {
         speedCard.addView(minLabel); speedCard.addView(minBar)
         mid.addView(speedCard)
 
-        val walkCard = card().apply { layoutParams = lp(8) }
+        val walkCard = card().apply { layoutParams = lp(6) }
         val cruiseLabel = lbl("Yürüyüş hızı: %$cruiseLevel", 13f, TXT)
         val cruiseBar = SeekBar(this).apply {
             max = 100; progress = cruiseLevel
             setOnSeekBarChangeListener(simpleBar({ cruiseLevel = it; cruiseLabel.text = "Yürüyüş hızı: %$it" }, { refreshCruiseBtn() }))
         }
         val btnCruise = styledBtn("Yürüyüş: KAPALI", 0xFF37474F.toInt()).apply {
-            layoutParams = lp(8)
+            layoutParams = lp(4)
             setOnClickListener { cruiseOn = !cruiseOn; refreshCruiseBtn() }
         }
         btnCruiseRef = btnCruise
         walkCard.addView(cruiseLabel); walkCard.addView(cruiseBar); walkCard.addView(btnCruise)
         mid.addView(walkCard)
 
-        val btnStop = styledBtn("■  ACİL DUR", RED).apply {
-            textSize = 18f; layoutParams = lp(10)
+        val btnStop = styledBtn("■  ACİL DUR", RED, size = 17f, vPad = 12).apply {
+            layoutParams = lp(6)
             setOnClickListener { throttle = 0; steer = 0; cruiseOn = false; refreshCruiseBtn(); writeCmd("S") }
         }
-        mid.addView(btnStop)
-
         centerScroll.addView(mid)
-        row.addView(centerScroll)
+        centerCol.addView(centerScroll)
+        centerCol.addView(btnStop)   // her zaman görünür, kaydırılmaz
+        row.addView(centerCol)
 
         // ---- SAĞ: SOL / SAĞ stick ----
         val rightCol = LinearLayout(this).apply {
@@ -220,11 +235,11 @@ class MainActivity : AppCompatActivity() {
         }
         rightCol.addView(lbl("SOL / SAĞ", 12f, TXT2, true).apply { gravity = Gravity.CENTER })
         val steerPanel = LinearLayout(this).apply {
-            gravity = Gravity.CENTER; background = roundBg(SURFACE, 24)
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).apply { topMargin = dp(6) }
+            gravity = Gravity.CENTER; background = roundBg(SURFACE, 24); setPadding(dp(8), dp(8), dp(8), dp(8))
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).apply { topMargin = dp(4) }
         }
         val steerStick = JoystickView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(dp(210), dp(210))
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.MATCH_PARENT)
             listener = { x, _ -> steer = (x * 100).roundToInt().coerceIn(-100, 100) }
         }
         steerPanel.addView(steerStick)
